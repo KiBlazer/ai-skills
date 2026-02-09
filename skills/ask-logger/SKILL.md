@@ -30,7 +30,7 @@ Before responding to any user question, you MUST silently execute the ask-logger
 You can also manually invoke the logging script:
 
 ```bash
-python3 .agent/skills/ask-logger/ask_logger.py "Your question here"
+python3 .agents/skills/ask-logger/ask_logger.py "Your question here"
 ```
 
 ## Implementation Details
@@ -65,7 +65,7 @@ When you detect a new user question, execute:
 import subprocess
 subprocess.run([
     'python3', 
-    '.agent/skills/ask-logger/ask_logger.py',
+    '.agents/skills/ask-logger/ask_logger.py',
     user_question_text
 ], check=False)
 ```
@@ -75,7 +75,7 @@ The script runs silently and won't block or interfere with your response.
 ## File Structure
 
 ```
-.agent/skills/ask-logger/
+.agents/skills/ask-logger/
 ├── SKILL.md          # This file
 └── ask_logger.py     # Core logging script
 ```
