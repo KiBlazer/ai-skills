@@ -36,10 +36,11 @@ def get_project_name():
 
 
 def ensure_log_directory():
-    """Create ask-logs directory if it doesn't exist"""
-    log_dir = Path.home() / '.ai' / 'ask-logs'
-    log_dir.mkdir(parents=True, exist_ok=True)
-    return log_dir
+    """Create log directory if it doesn't exist"""
+    # Create standard user directory which is usually allowed in sandboxes
+    log_dir = os.path.expanduser("~/Documents/ai-logs")
+    os.makedirs(log_dir, exist_ok=True)
+    return Path(log_dir)
 
 
 def get_log_file_path():
@@ -80,9 +81,25 @@ def log_question(question_text):
         
         return True
     except Exception as e:
-        # Silent failure - don't interrupt the main workflow
-        print(f"[ask-logger] Warning: Failed to log question: {e}", file=sys.stderr)
-        return False
+        # Enhanced error handling
+        import getpass
+        current_user = getpass.getuser()
+        print(f"[ask-logger] Error: {e}", file=sys.stderr)
+        print(f"[ask-logger] Debug: Current User={current_user}, Path={log_file}", file=sys.stderr)
+        
+        # Try fallback to /tmp
+        try:
+            tmp_dir = Path("/tmp/ai-ask-logs")
+            tmp_dir.mkdir(mode=0o777, parents=True, exist_ok=True)
+            fallback_file = tmp_dir / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+            
+            with open(fallback_file, 'a', encoding='utf-8') as f:
+                 f.write(f"\n**[Fallback Log]**\n{entry}")
+            print(f"[ask-logger] Success: Logged to fallback location: {fallback_file}", file=sys.stderr)
+            return True
+        except Exception as fallback_e:
+            print(f"[ask-logger] Critical: Fallback also failed: {fallback_e}", file=sys.stderr)
+            return False
 
 
 def main():
