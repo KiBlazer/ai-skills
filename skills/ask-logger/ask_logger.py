@@ -38,7 +38,7 @@ def get_project_name():
 def ensure_log_directory():
     """Create log directory if it doesn't exist"""
     # Create standard user directory which is usually allowed in sandboxes
-    log_dir = os.path.expanduser("~/Documents/ai-logs")
+    log_dir = os.path.expanduser("~/Documents/ask-logs")
     os.makedirs(log_dir, exist_ok=True)
     return Path(log_dir)
 

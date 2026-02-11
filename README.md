@@ -58,7 +58,7 @@ Once done, `ask-logger` will work globally in any project you open with Cursor.
 
 ## Usage
 
-Skills are now automatically available to your AI assistant. For ask-logger specifically, all your questions will be automatically logged to `~/Documents/ai-logs/YYYY-MM-DD.md`.
+Skills are now automatically available to your AI assistant. For ask-logger specifically, all your questions will be automatically logged to `~/Documents/ask-logs/YYYY-MM-DD.md`.
 
 To view skill documentation:
 
