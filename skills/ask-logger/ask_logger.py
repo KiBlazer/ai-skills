@@ -50,21 +50,28 @@ def get_log_file_path():
     return log_dir / f'{today}.md'
 
 
-def log_question(question_text):
+def log_question(question_text, session_id=None, status='', type_=''):
     """
-    Log a question to the daily markdown file
-    
+    Log a question to the daily markdown file.
+
     Args:
-        question_text: The user's question to log
+        question_text: The user's question to log (typically from stdin).
+        session_id: Optional session/conversation ID (CLI --session-id=).
+        status: Optional status (e.g. pending/resolved/skipped), for later tagging.
+        type_: Optional type/tags (e.g. 配置/代码/需求/调试/讨论), for later tagging.
     """
     try:
         log_file = get_log_file_path()
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         branch = get_git_branch()
         project = get_project_name()
-        
-        # Build the log entry
+
+        # Build the log entry (fixed order for parsing)
         entry = f"\n**Time:** {timestamp}\n"
+        if session_id:
+            entry += f"**Session:** {session_id}\n"
+        entry += f"**Status:** {status}\n"
+        entry += f"**Type:** {type_}\n"
         if branch:
             entry += f"**Branch:** {branch}\n"
         entry += f"**Project:** {project}\n"
@@ -102,14 +109,26 @@ def log_question(question_text):
             return False
 
 
+def _get_session_id():
+    """Session ID: CLI --session-id= wins; else generic env ASK_LOGGER_SESSION_ID or AI_SESSION_ID (any tool can set)."""
+    for arg in sys.argv[1:]:
+        if arg.startswith('--session-id='):
+            val = arg.split('=', 1)[1].strip()
+            return val if val else None
+    raw = os.environ.get('ASK_LOGGER_SESSION_ID') or os.environ.get('AI_SESSION_ID')
+    return (raw or '').strip() or None
+
+
 def main():
-    """Main entry point for the script"""
-    if len(sys.argv) < 2:
-        print("Usage: ask_logger.py <question_text>", file=sys.stderr)
+    """Main entry point. Question content is read from stdin only (tool-agnostic)."""
+    session_id = _get_session_id()
+
+    question = sys.stdin.read()
+    if not question.strip():
+        print("Usage: pipe question content to stdin, e.g. echo '...' | ask_logger.py [--session-id=UUID]", file=sys.stderr)
         sys.exit(1)
-    
-    question = ' '.join(sys.argv[1:])
-    log_question(question)
+
+    log_question(question.strip(), session_id=session_id)
 
 
 if __name__ == '__main__':
