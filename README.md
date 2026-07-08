@@ -32,6 +32,12 @@ Runs a focused one-question-at-a-time interview to stress-test a plan or design 
 
 ## Installation
 
+Install a single skill with the Skills CLI:
+
+```bash
+npx skills add KiBlazer/ai-skills --skill grill-me -g -y
+```
+
 This project provides an out-of-box deployment system. Simply clone and sync:
 
 ```bash
