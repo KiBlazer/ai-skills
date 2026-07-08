@@ -25,6 +25,11 @@ Automatically captures and logs user questions with contextual metadata to daily
 
 **Use Case:** Track all AI interactions for later analysis, pattern recognition, and knowledge management.
 
+### 🔥 [grill-me](skills/grill-me)
+Runs a focused one-question-at-a-time interview to stress-test a plan or design before implementation.
+
+**Use Case:** Sharpen plans, expose unresolved decisions, and reach shared understanding before building.
+
 ## Installation
 
 This project provides an out-of-box deployment system. Simply clone and sync:
