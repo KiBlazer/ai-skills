@@ -30,6 +30,16 @@ Runs a focused one-question-at-a-time interview to stress-test a plan or design 
 
 **Use Case:** Sharpen plans, expose unresolved decisions, and reach shared understanding before building.
 
+### 🔔 [notify-user](skills/notify-user)
+Agent-decided semantic desktop notifications: the agent sends a silent, platform-native
+notification only after fully completed and verified work, a genuinely independent milestone,
+a blocker, or a material failure. Privacy-controlled workspace disclosure
+(`off` / `basename` / `full`), accurate `sent` / `skipped` / `failed` dispositions, and a
+portable test suite included.
+
+**Use Case:** Alert a human at exactly the moments that matter, without noise on every tool
+completion.
+
 ## Installation
 
 Install a single skill with the Skills CLI:

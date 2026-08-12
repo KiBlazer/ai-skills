@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+# notify-user: cross-agent semantic desktop notification helper
+#
+# The agent decides WHEN to notify (see the notify-user skill); this helper
+# only delivers the message safely. It is platform-portable:
+#   - WSL2/Windows: synchronous silent Windows Toast via powershell.exe (no audio)
+#   - macOS:        osascript notification, foreground
+#   - Linux:        notify-send when available, foreground
+#   - unsupported / missing notifier: short skip note, exit 0 (graceful no-op)
+#
+# Output contract:
+#   stdout + exit 0  : exactly one line - "notify-user: sent - <title>" or
+#                      "notify-user: skipped - <reason>"
+#   stderr + nonzero : "notify-user: failed - <diagnostic>" (exit 1) or an
+#                      invalid-argument usage error (exit 2). Callers must
+#                      check the exit status, read the appropriate stream,
+#                      and never claim delivery when the exit is nonzero.
+# Child notifier stdout is suppressed so the stdout above stays exactly one
+# line; useful diagnostics from notifiers remain visible on stderr.
+#
+# Workspace line (privacy-controlled via NOTIFY_USER_WORKSPACE):
+#   off      - no Workspace line is added
+#   basename - only the final directory name, e.g. "Workspace: rivu" (default)
+#   full     - full path with home abbreviated as ~ and left truncation
+# Agents must never pass the working directory as an argument.
+#
+# Requires python3 for input sanitization (no ASCII fallback is provided).
+# Has no dependency on PeonPing or any other plugin.
+#
+# Usage: notify-user <complete|milestone|blocked|error> <title> [body]
+#   title  concise outcome/decision, <= 70 chars (required)
+#   body   optional context/action line, <= 70 chars (only the first
+#          nonempty body line is used; later lines are discarded)
+# NOTIFY_USER_PLATFORM (test hook) forces wsl|macos|linux|unsupported.
+# NOTIFY_USER_WORKSPACE (test hook) forces off|basename|full.
+set -uo pipefail
+
+CATEGORY="${1:-}"
+TITLE="${2:-}"
+BODY="${3:-}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: notify-user <category> <title> [body]
+  category  complete | milestone | blocked | error
+  title     concise outcome/decision, <=70 chars (required)
+  body      optional context/action line, <=70 chars
+
+Workspace disclosure is controlled by NOTIFY_USER_WORKSPACE:
+  off | basename (default) | full
+Never pass the working directory in the title or body.
+EOF
+}
+
+case "$CATEGORY" in
+  complete|milestone|blocked|error) ;;
+  *)
+    echo "notify-user: invalid category '${CATEGORY}' (must be complete|milestone|blocked|error)" >&2
+    usage
+    exit 2
+    ;;
+esac
+
+if [ -z "${TITLE// /}" ]; then
+  echo "notify-user: title argument is required" >&2
+  usage
+  exit 2
+fi
+
+if [ "$#" -gt 3 ]; then
+  echo "notify-user: too many arguments (category, title, optional body only)" >&2
+  usage
+  exit 2
+fi
+
+# --- Workspace privacy mode (usage-level validation) ---
+WS_MODE="${NOTIFY_USER_WORKSPACE:-basename}"
+case "$WS_MODE" in
+  off|basename|full) ;;
+  *)
+    echo "notify-user: invalid NOTIFY_USER_WORKSPACE '${WS_MODE}' (must be off, basename, or full)" >&2
+    usage
+    exit 2
+    ;;
+esac
+
+# --- Sanitize & truncate: python3 is a hard requirement ---
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "notify-user: failed - python3 is required for input sanitization (no fallback provided)" >&2
+  exit 1
+fi
+
+sanitized="$(python3 - "$TITLE" "$BODY" <<'PY' 2>/dev/null
+import sys, re
+
+def _line(s, limit):
+    s = s.replace('\r', ' ')
+    s = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    if len(s) > limit:
+        s = s[: limit - 3].rstrip() + '...'
+    return s
+
+def _first_line(s, limit):
+    # Only the first nonempty input body line is kept; every later line is
+    # discarded on every platform.
+    if not s:
+        return ''
+    for raw in s.split('\n'):
+        l = _line(raw, limit)
+        if l:
+            return l
+    return ''
+
+_title = _line(sys.argv[1], 70)
+_body1 = _first_line(sys.argv[2] if len(sys.argv) > 2 else '', 70)
+# Fields are separated by the record separator (0x1e), which _line strips,
+# so the split below is exact even when the body is empty.
+sys.stdout.write(_title + '\x1e' + _body1)
+PY
+)" || {
+  echo "notify-user: failed - input sanitization failed" >&2
+  exit 1
+}
+title_s="${sanitized%%$'\x1e'*}"
+body1_s="${sanitized#*$'\x1e'}"
+if [ -z "$title_s" ]; then
+  echo "notify-user: failed - title is empty after sanitization" >&2
+  exit 1
+fi
+
+# --- Build the Workspace line according to the privacy mode ---
+CWD="$(pwd -P 2>/dev/null || pwd)"
+if [ "$WS_MODE" = "off" ]; then
+  workspace_s=""
+elif [ -z "$CWD" ]; then
+  workspace_s="Workspace: (unknown)"
+else
+  workspace_s="$(python3 - "$CWD" "${HOME:-}" "$WS_MODE" <<'PY' 2>/dev/null
+import sys, re, os
+
+def _clean(s):
+    s = s.replace('\r', ' ')
+    s = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+def _shorten(s, limit):
+    if len(s) <= limit:
+        return s
+    keep = limit - 3
+    if keep < 1:
+        return s[:limit]
+    start = len(s) - keep
+    p = s.find('/', start)
+    if p != -1:
+        return '...' + s[p:]
+    return '...' + s[start:]
+
+cwd = sys.argv[1]
+home = sys.argv[2] if len(sys.argv) > 2 else ''
+mode = sys.argv[3] if len(sys.argv) > 3 else 'basename'
+
+if mode == 'basename':
+    name = os.path.basename(cwd.rstrip('/')) if cwd else ''
+    if not name:
+        name = 'unknown'
+    name = _clean(name)
+    if len(name) > 60:
+        name = name[:57].rstrip() + '...'
+    sys.stdout.write('Workspace: ' + name)
+else:
+    # full
+    raw = _clean(cwd)
+    if home:
+        if raw == home:
+            raw = '~'
+        elif raw.startswith(home + '/'):
+            raw = '~' + raw[len(home):]
+    raw = _shorten(raw, 149)
+    sys.stdout.write('Workspace: ' + raw)
+PY
+  )"
+  if [ -z "$workspace_s" ]; then
+    workspace_s="Workspace: (unknown)"
+  fi
+fi
+
+# --- Compose the single context line + optional workspace body for macOS/Linux ---
+if [ -n "$body1_s" ] && [ -n "$workspace_s" ]; then
+  full_body="${body1_s}
+${workspace_s}"
+elif [ -n "$body1_s" ]; then
+  full_body="${body1_s}"
+else
+  full_body="${workspace_s}"
+fi
+
+# --- Platform detection (NOTIFY_USER_PLATFORM overrides for tests) ---
+if [ -n "${NOTIFY_USER_PLATFORM:-}" ]; then
+  PLATFORM="$NOTIFY_USER_PLATFORM"
+else
+  PLATFORM="unsupported"
+  case "$(uname -s)" in
+    Darwin)
+      PLATFORM="macos"
+      ;;
+    Linux)
+      if grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null || \
+         grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null; then
+        PLATFORM="wsl"
+      else
+        PLATFORM="linux"
+      fi
+      ;;
+  esac
+fi
+
+notify_platform() {
+  case "$PLATFORM" in
+    wsl)
+      # Transport check: powershell.exe + wslpath must exist.
+      if ! command -v powershell.exe >/dev/null 2>&1 || ! command -v wslpath >/dev/null 2>&1; then
+        echo "notify-user: skipped - WSL toast needs powershell.exe and wslpath (not found)"
+        return 0
+      fi
+      local tmpdir tmpdir_wsl xml_path xml_win toast_title toast_body1 toast_ws texts rc
+      # Resolve the Windows TEMP directory. Never fall back to /tmp here:
+      # PowerShell reads the file through the Windows path, so the file must
+      # live on the Windows filesystem. A failing preflight is a failure, not
+      # a skip: nonzero exit status is checked even when output is nonempty.
+      tmpdir="$(powershell.exe -NoProfile -NonInteractive -Command '[System.IO.Path]::GetTempPath()' 2>/dev/null | tr -d '\r')"
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        echo "notify-user: failed - powershell.exe preflight exited ${rc}" >&2
+        return 1
+      fi
+      [ -n "$tmpdir" ] || { echo "notify-user: failed - powershell.exe preflight returned an empty TEMP path" >&2; return 1; }
+      tmpdir_wsl="$(wslpath -u "$tmpdir" 2>/dev/null)"
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        echo "notify-user: failed - wslpath -u conversion exited ${rc}" >&2
+        return 1
+      fi
+      [ -n "$tmpdir_wsl" ] || { echo "notify-user: failed - wslpath -u returned an empty path" >&2; return 1; }
+      # Race-safe unique toast file per invocation (mktemp uses O_EXCL); the
+      # template ends in XXXXXX so every concurrent call gets its own path.
+      xml_path="$(mktemp "$tmpdir_wsl/notify-user-XXXXXX" 2>/dev/null)" || xml_path=""
+      if [ -z "$xml_path" ] || [ ! -f "$xml_path" ]; then
+        echo "notify-user: failed - cannot create a unique toast file in ${tmpdir_wsl}" >&2
+        return 1
+      fi
+      # Escape every interpolated value into the XML (never into PowerShell source).
+      escape_xml() {
+        printf '%s' "$1" | tr -d '\000-\010\013\014\016-\037' | \
+          sed "s/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/\"/\&quot;/g; s/'/\&apos;/g"
+      }
+      toast_title="$(escape_xml "$title_s")"
+      if [ -n "$body1_s" ]; then
+        toast_body1="$(escape_xml "$body1_s")"
+      else
+        toast_body1=""
+      fi
+      if [ -n "$workspace_s" ]; then
+        toast_ws="$(escape_xml "$workspace_s")"
+      else
+        toast_ws=""
+      fi
+      # ToastGeneric text elements: title, ONE compact context/action line
+      # (the only nonempty body line that survived sanitization), and the
+      # Workspace line when the privacy mode includes one.
+      texts="<text>${toast_title}</text>"
+      [ -n "$toast_body1" ] && texts="${texts}<text>${toast_body1}</text>"
+      [ -n "$toast_ws" ] && texts="${texts}<text>${toast_ws}</text>"
+      printf '<toast launch="parentPid=0" duration="short"><visual><binding template="ToastGeneric">%s</binding></visual><audio silent="true" /></toast>' \
+        "$texts" > "$xml_path"
+      xml_win="$(wslpath -w "$xml_path" 2>/dev/null)"
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        rm -f "$xml_path"
+        echo "notify-user: failed - wslpath -w conversion exited ${rc}" >&2
+        return 1
+      fi
+      [ -n "$xml_win" ] || { rm -f "$xml_path"; echo "notify-user: failed - wslpath -w returned an empty path" >&2; return 1; }
+      # One synchronous PowerShell invocation. The unique XML Windows path is
+      # passed as an explicit positional argument ($args[0]) via the documented
+      # "& { }" script-block shape - never interpolated into the command source
+      # and never reliant on environment propagation, which WSL interop does
+      # not provide. PowerShell validates the path, reports delivery failure
+      # with a nonzero exit, and cleans up its own file without masking a prior
+      # delivery failure.
+      powershell.exe -NoProfile -NonInteractive -Command '& {
+        $ErrorActionPreference = "Stop"
+        $path = $args[0]
+        if ([string]::IsNullOrEmpty($path)) {
+          Write-Error "notify-user: empty toast path"
+          exit 2
+        }
+        try {
+          [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+          [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null
+          $APP_ID = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
+          $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
+          $doc.LoadXml((Get-Content -LiteralPath $path -Raw -Encoding UTF8))
+          $toast = New-Object Windows.UI.Notifications.ToastNotification $doc
+          [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($APP_ID).Show($toast)
+        } catch {
+          Write-Error ("notify-user: toast failed - " + $_.Exception.Message)
+          exit 1
+        } finally {
+          if (-not [string]::IsNullOrEmpty($path)) {
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+          }
+        }
+        exit 0
+      }' -- "$xml_win" >/dev/null
+      rc=$?
+      # Cleanup is scoped to this invocation's unique file only.
+      rm -f "$xml_path"
+      if [ "$rc" -eq 0 ]; then
+        echo "notify-user: sent - ${title_s}"
+        return 0
+      fi
+      echo "notify-user: failed - Windows toast invocation error (exit ${rc})" >&2
+      return 1
+      ;;
+    macos)
+      # macOS notification via osascript (foreground; args passed safely via argv).
+      if ! command -v osascript >/dev/null 2>&1; then
+        echo "notify-user: skipped - osascript not found"
+        return 0
+      fi
+      osascript -e 'on run argv
+        set _title to item 1 of argv
+        set _body to item 2 of argv
+        if _body is "" then
+          display notification _title with title "notify-user"
+        else
+          display notification _body with title _title
+        end if
+      end run' "$title_s" "$full_body" >/dev/null
+      local rc=$?
+      if [ "$rc" -eq 0 ]; then
+        echo "notify-user: sent - ${title_s}"
+        return 0
+      fi
+      echo "notify-user: failed - osascript error (exit ${rc})" >&2
+      return 1
+      ;;
+    linux)
+      # Linux desktop notification via notify-send (foreground when available).
+      if ! command -v notify-send >/dev/null 2>&1; then
+        echo "notify-user: skipped - notify-send not found"
+        return 0
+      fi
+      notify-send "$title_s" "$full_body" >/dev/null
+      local rc=$?
+      if [ "$rc" -eq 0 ]; then
+        echo "notify-user: sent - ${title_s}"
+        return 0
+      fi
+      echo "notify-user: failed - notify-send error (exit ${rc})" >&2
+      return 1
+      ;;
+    *)
+      echo "notify-user: skipped - unsupported platform (${PLATFORM})"
+      return 0
+      ;;
+  esac
+}
+
+notify_platform
+exit $?
